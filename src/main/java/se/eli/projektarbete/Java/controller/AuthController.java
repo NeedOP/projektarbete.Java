@@ -1,221 +1,263 @@
 package se.eli.projektarbete.Java.controller;
 
-import org.springframework.web.bind.annotation.*;
-import org.springframework.http.*;
-import org.springframework.beans.factory.annotation.Autowired;
-import se.eli.projektarbete.Java.repository.UserRepository;
-import se.eli.projektarbete.Java.repository.RoleRepository;
-import se.eli.projektarbete.Java.entity.User;
-import se.eli.projektarbete.Java.entity.Role;
-import se.eli.projektarbete.Java.dto.RegisterDto;
-import se.eli.projektarbete.Java.dto.AuthRequestDto;
-import se.eli.projektarbete.Java.config.JwtProvider;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import jakarta.validation.Valid;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.core.userdetails.UserDetails;
-
-import java.util.Set;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.HashSet;
-import java.util.stream.Collectors;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.web.bind.annotation.*;
+import se.eli.projektarbete.Java.config.JwtService;
+import se.eli.projektarbete.Java.dto.AuthRequestDto;
+import se.eli.projektarbete.Java.dto.RegisterDto;
+import se.eli.projektarbete.Java.entity.Role;
+import se.eli.projektarbete.Java.entity.User;
+import se.eli.projektarbete.Java.repository.RoleRepository;
+import se.eli.projektarbete.Java.repository.UserRepository;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
-@CrossOrigin(origins = "http://localhost:3000")
+@CrossOrigin(origins = "http://localhost:3000", allowCredentials = "true")
+@RequiredArgsConstructor
+@Slf4j
 public class AuthController {
 
-    @Autowired
-    UserRepository userRepository;
-
-    @Autowired
-    RoleRepository roleRepository;
-
-    @Autowired
-    PasswordEncoder passwordEncoder;
-
-    @Autowired
-    JwtProvider jwtProvider;
-
-    @Autowired
-    RabbitTemplate rabbitTemplate;
+    private final AuthenticationManager authenticationManager;
+    private final UserRepository userRepository;
+    private final RoleRepository roleRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtService jwtService;
+    private final RabbitTemplate rabbitTemplate;
 
     @PostMapping("/register")
-    public ResponseEntity<?> register(@Valid @RequestBody RegisterDto dto) {
+    public ResponseEntity<?> registerUser(@Valid @RequestBody RegisterDto registerDto) {
+        log.info("New user registering: {}", registerDto.getUsername());
+
+        // Check if username exists
+        if (userRepository.findByUsername(registerDto.getUsername()).isPresent()) {
+            return ResponseEntity.badRequest().body("Username already taken!");
+        }
+
         try {
-            System.out.println("📝 Registration attempt for: " + dto.getUsername());
-
-            // Check if username exists
-            if (userRepository.existsByUsername(dto.getUsername())) {
-                System.out.println("❌ Username already exists: " + dto.getUsername());
-                return ResponseEntity.status(HttpStatus.CONFLICT)
-                        .body(Map.of("error", "Username already exists"));
-            }
-
             // Create new user
             User user = new User();
-            user.setUsername(dto.getUsername());
-            user.setPassword(passwordEncoder.encode(dto.getPassword()));
-            user.setEnabled(true);
+            user.setUsername(registerDto.getUsername());
+            user.setEmail(registerDto.getEmail());  // Now this works!
+            user.setPassword(passwordEncoder.encode(registerDto.getPassword()));
+            user.setEnabled(false);  // NOT enabled until email verified!
 
-            // Get or create USER role
+            // Give user role (not admin)
             Role userRole = roleRepository.findByName("ROLE_USER")
-                    .orElseGet(() -> {
-                        Role newRole = new Role();
-                        newRole.setName("ROLE_USER");
-                        System.out.println("✅ Creating ROLE_USER");
-                        return roleRepository.save(newRole);
-                    });
+                    .orElseThrow(() -> new RuntimeException("Role USER not found"));
+            user.setRoles(Collections.singleton(userRole));
 
-            // Create roles set
-            Set<Role> roles = new HashSet<>();
-            roles.add(userRole);
-            user.setRoles(roles);
+            User savedUser = userRepository.save(user);
+            log.info("User saved: {}", savedUser.getUsername());
 
-            // Save user
-            userRepository.save(user);
-            System.out.println("✅ User registered successfully: " + user.getUsername());
+            // Send email via RabbitMQ
+            sendWelcomeEmail(savedUser);
 
-            // Send to RabbitMQ (optional)
-            try {
-                Map<String, String> message = new HashMap<>();
-                message.put("username", user.getUsername());
-                message.put("action", "registered");
-                rabbitTemplate.convertAndSend("user-exchange", "user.registered", message);
-                System.out.println("📧 RabbitMQ message sent");
-            } catch (Exception e) {
-                System.out.println("⚠️ RabbitMQ error (but user created): " + e.getMessage());
-            }
-
-            // Return success response
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "Registration successful");
-            response.put("username", user.getUsername());
-
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok("User registered! Check email to verify.");
 
         } catch (Exception e) {
-            System.err.println("❌ Registration error: " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Registration failed: " + e.getMessage()));
+            log.error("Registration error", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Registration failed");
         }
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@Valid @RequestBody AuthRequestDto dto, HttpServletResponse response) {
+    public ResponseEntity<?> loginUser(@Valid @RequestBody AuthRequestDto loginDto,
+                                       HttpServletResponse response) {
+        log.info("Login attempt: {}", loginDto.getUsername());
+
         try {
-            System.out.println("🔑 Login attempt for: " + dto.getUsername());
+            // Check username and password
+            Authentication authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(
+                            loginDto.getUsername(),
+                            loginDto.getPassword()
+                    )
+            );
 
-            var userOpt = userRepository.findByUsername(dto.getUsername());
-            if (userOpt.isEmpty()) {
-                System.out.println("❌ User not found: " + dto.getUsername());
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(Map.of("error", "Invalid credentials"));
-            }
+            SecurityContextHolder.getContext().setAuthentication(authentication);
 
-            var user = userOpt.get();
+            // Get user from database
+            User user = userRepository.findByUsername(loginDto.getUsername())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
 
+            // Check if account is verified
             if (!user.isEnabled()) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(Map.of("error", "Account is disabled"));
+                        .body("Account not verified. Check your email!");
             }
 
-            if (!passwordEncoder.matches(dto.getPassword(), user.getPassword())) {
-                System.out.println("❌ Wrong password for: " + dto.getUsername());
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body(Map.of("error", "Invalid credentials"));
-            }
+            // Create UserDetails object
+            org.springframework.security.core.userdetails.User userDetails =
+                    new org.springframework.security.core.userdetails.User(
+                            user.getUsername(),
+                            user.getPassword(),
+                            user.getRoles().stream()
+                                    .map(role -> new org.springframework.security.core.authority.SimpleGrantedAuthority(role.getName()))
+                                    .toList()
+                    );
 
             // Create JWT token
-            String token = jwtProvider.createToken(user.getUsername());
+            Map<String, Object> extraClaims = new HashMap<>();
+            extraClaims.put("userId", user.getId());
 
-            // Set JWT as HTTP-only cookie
-            Cookie jwtCookie = new Cookie("JWT", token);
+            String jwt = jwtService.generateToken(extraClaims, userDetails);
+
+            // Put token in cookie
+            Cookie jwtCookie = new Cookie("JWT", jwt);
             jwtCookie.setHttpOnly(true);
             jwtCookie.setPath("/");
-            jwtCookie.setMaxAge(24 * 60 * 60); // 24 hours
+            jwtCookie.setMaxAge(7 * 24 * 60 * 60); // 7 days
             response.addCookie(jwtCookie);
 
-            // Set username as regular cookie for frontend
+            // Put username in cookie
             Cookie userCookie = new Cookie("username", user.getUsername());
             userCookie.setPath("/");
-            userCookie.setMaxAge(24 * 60 * 60);
+            userCookie.setMaxAge(7 * 24 * 60 * 60);
             response.addCookie(userCookie);
 
-            System.out.println("✅ Login successful for: " + user.getUsername());
+            log.info("Login successful: {}", user.getUsername());
 
-            // Return response
-            Map<String, Object> loginResponse = new HashMap<>();
-            loginResponse.put("success", true);
-            loginResponse.put("message", "Login successful");
-            loginResponse.put("username", user.getUsername());
-            loginResponse.put("roles", user.getRoles().stream()
-                    .map(Role::getName)
-                    .collect(Collectors.toList()));
+            // Send login email
+            sendLoginEmail(user);
 
-            return ResponseEntity.ok(loginResponse);
+            return ResponseEntity.ok(Map.of(
+                    "message", "Login successful",
+                    "username", user.getUsername(),
+                    "role", user.getRoles().stream()
+                            .findFirst()
+                            .map(r -> r.getName())
+                            .orElse("ROLE_USER")
+            ));
 
         } catch (Exception e) {
-            System.err.println("❌ Login error: " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Login failed: " + e.getMessage()));
+            log.error("Login failed", e);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body("Wrong username or password");
         }
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<?> logout(HttpServletResponse response) {
-        // Clear JWT cookie
-        Cookie jwtCookie = new Cookie("JWT", "");
+    public ResponseEntity<?> logoutUser(HttpServletResponse response) {
+        log.info("User logging out");
+
+        // Delete cookies
+        Cookie jwtCookie = new Cookie("JWT", null);
         jwtCookie.setHttpOnly(true);
         jwtCookie.setPath("/");
         jwtCookie.setMaxAge(0);
         response.addCookie(jwtCookie);
 
-        // Clear username cookie
-        Cookie userCookie = new Cookie("username", "");
+        Cookie userCookie = new Cookie("username", null);
         userCookie.setPath("/");
         userCookie.setMaxAge(0);
         response.addCookie(userCookie);
 
-        return ResponseEntity.ok(Map.of("success", true, "message", "Logged out"));
+        return ResponseEntity.ok("Logged out successfully");
     }
 
-    @GetMapping("/me")
-    public ResponseEntity<?> getCurrentUser(@AuthenticationPrincipal UserDetails userDetails) {
-        if (userDetails == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Not logged in"));
+    @GetMapping("/verify/{userId}")
+    public ResponseEntity<?> verifyEmail(@PathVariable Long userId) {
+        try {
+            User user = userRepository.findById(userId)
+                    .orElseThrow(() -> new RuntimeException("User not found"));
+
+            user.setEnabled(true);
+            userRepository.save(user);
+
+            log.info("User verified: {}", user.getUsername());
+
+            return ResponseEntity.ok("Account verified! You can now login.");
+
+        } catch (Exception e) {
+            log.error("Verification failed", e);
+            return ResponseEntity.badRequest().body("Verification failed");
         }
-
-        var userOpt = userRepository.findByUsername(userDetails.getUsername());
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "User not found"));
-        }
-
-        var user = userOpt.get();
-        Map<String, Object> response = new HashMap<>();
-        response.put("username", user.getUsername());
-        response.put("enabled", user.isEnabled());
-        response.put("roles", user.getRoles().stream()
-                .map(Role::getName)
-                .collect(Collectors.toList()));
-
-        return ResponseEntity.ok(response);
     }
 
-    @GetMapping("/test")
-    public ResponseEntity<?> test() {
+    @GetMapping("/check")
+    public ResponseEntity<?> checkAuth() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+
+        if (auth == null || !auth.isAuthenticated() ||
+                "anonymousUser".equals(auth.getPrincipal())) {
+            return ResponseEntity.ok(Map.of("authenticated", false));
+        }
+
+        String username = auth.getName();
+        User user = userRepository.findByUsername(username).orElse(null);
+
+        if (user == null) {
+            return ResponseEntity.ok(Map.of("authenticated", false));
+        }
+
         return ResponseEntity.ok(Map.of(
-                "status", "Backend is running!",
-                "timestamp", System.currentTimeMillis()
+                "authenticated", true,
+                "username", user.getUsername(),
+                "enabled", user.isEnabled(),
+                "role", user.getRoles().stream()
+                        .findFirst()
+                        .map(r -> r.getName())
+                        .orElse("ROLE_USER")
         ));
+    }
+
+    private void sendWelcomeEmail(User user) {
+        try {
+            Map<String, String> message = new HashMap<>();
+            message.put("to", user.getEmail() != null ? user.getEmail() : "admin@example.com");
+            message.put("subject", "Welcome to E-Shop!");
+            message.put("body", String.format(
+                    "Hello %s!\n\n" +
+                            "Thanks for registering at E-Shop.\n\n" +
+                            "Click here to verify your account:\n" +
+                            "http://localhost:8080/api/auth/verify/%d\n\n" +
+                            "Best regards,\nE-Shop Team",
+                    user.getUsername(), user.getId()
+            ));
+
+            rabbitTemplate.convertAndSend("emailExchange", "email.routing", message);
+            log.info("Welcome email sent to: {}", user.getUsername());
+
+        } catch (Exception e) {
+            log.error("Failed to send email", e);
+        }
+    }
+
+    private void sendLoginEmail(User user) {
+        try {
+            Map<String, String> message = new HashMap<>();
+            message.put("to", user.getEmail() != null ? user.getEmail() : "admin@example.com");
+            message.put("subject", "New Login - E-Shop");
+            message.put("body", String.format(
+                    "Hello %s,\n\n" +
+                            "Someone just logged into your E-Shop account.\n\n" +
+                            "If this was you, ignore this email.\n" +
+                            "If not, change your password!\n\n" +
+                            "E-Shop Security",
+                    user.getUsername()
+            ));
+
+            rabbitTemplate.convertAndSend("emailExchange", "email.routing", message);
+            log.info("Login email sent to: {}", user.getUsername());
+
+        } catch (Exception e) {
+            log.error("Failed to send login email", e);
+        }
     }
 }

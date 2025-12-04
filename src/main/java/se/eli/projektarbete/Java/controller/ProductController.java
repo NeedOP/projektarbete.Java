@@ -1,136 +1,133 @@
 package se.eli.projektarbete.Java.controller;
 
-import org.springframework.web.bind.annotation.*;
-import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
-import se.eli.projektarbete.Java.service.ProductService;
-import se.eli.projektarbete.Java.entity.Product;
+import org.springframework.web.bind.annotation.*;
 import se.eli.projektarbete.Java.dto.ProductDto;
+import se.eli.projektarbete.Java.entity.Product;
+import se.eli.projektarbete.Java.service.ProductService;
 
-import jakarta.validation.Valid;
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/products")
 @CrossOrigin(origins = "http://localhost:3000", allowCredentials = "true")
+@RequiredArgsConstructor
+@Slf4j
 public class ProductController {
 
-    @Autowired
-    private ProductService productService;
+    private final ProductService productService;
 
     @GetMapping
-    public ResponseEntity<List<Product>> getAllProducts() {
-        List<Product> products = productService.listAll();
-        return ResponseEntity.ok(products);
+    public ResponseEntity<?> getAllProducts() {
+        try {
+            List<Product> products = productService.getAllProducts();
+            log.info("Retrieved {} products", products.size());
+            return ResponseEntity.ok(products);
+        } catch (Exception e) {
+            log.error("Error getting products: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to retrieve products");
+        }
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Product> getProductById(@PathVariable Long id) {
+    public ResponseEntity<?> getProductById(@PathVariable Long id) {
         try {
-            Product product = productService.get(id);
+            Product product = productService.getProductById(id)
+                    .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
             return ResponseEntity.ok(product);
         } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            log.warn("Product not found: {}", id);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(e.getMessage());
+        } catch (Exception e) {
+            log.error("Error getting product: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to retrieve product");
         }
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
-    public ResponseEntity<?> createProduct(@Valid @RequestBody ProductDto dto) {
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<?> createProduct(@Valid @RequestBody ProductDto productDto) {
         try {
-            System.out.println("📦 Creating new product: " + dto.getName());
+            log.info("Creating product: {}", productDto.getName());
 
-            // Validate required fields
-            if (dto.getName() == null || dto.getName().trim().isEmpty()) {
-                return ResponseEntity.badRequest().body("Product name is required");
-            }
-            if (dto.getPrice() == null || dto.getPrice() <= 0) {
-                return ResponseEntity.badRequest().body("Price must be greater than 0");
-            }
-
-            // Create product
             Product product = new Product();
-            product.setName(dto.getName().trim());
-            product.setDescription(dto.getDescription() != null ? dto.getDescription().trim() : "");
-            product.setPrice(dto.getPrice());
-            product.setStock(dto.getStock() != null ? dto.getStock() : 0);
+            product.setName(productDto.getName());
+            product.setDescription(productDto.getDescription());
+            product.setPrice(productDto.getPrice());
+            product.setStock(productDto.getStock() != null ? productDto.getStock() : 0);
 
-            // Save product
-            Product savedProduct = productService.save(product);
-            System.out.println("✅ Product created with ID: " + savedProduct.getId());
+            Product createdProduct = productService.createProduct(product);
+            log.info("Product created successfully: {}", createdProduct.getId());
 
-            return ResponseEntity.status(HttpStatus.CREATED).body(savedProduct);
+            return ResponseEntity.status(HttpStatus.CREATED).body(createdProduct);
 
         } catch (Exception e) {
-            System.err.println("❌ Error creating product: " + e.getMessage());
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error creating product: " + e.getMessage());
+            log.error("Error creating product: ", e);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body("Failed to create product: " + e.getMessage());
         }
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
     @PutMapping("/{id}")
-    public ResponseEntity<?> updateProduct(@PathVariable Long id, @Valid @RequestBody ProductDto dto) {
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<?> updateProduct(@PathVariable Long id,
+                                           @Valid @RequestBody ProductDto productDto) {
         try {
-            System.out.println("🔄 Updating product ID: " + id);
+            log.info("Updating product: {}", id);
 
-            // Get existing product
-            Product existingProduct = productService.get(id);
+            Product product = new Product();
+            product.setName(productDto.getName());
+            product.setDescription(productDto.getDescription());
+            product.setPrice(productDto.getPrice());
+            product.setStock(productDto.getStock() != null ? productDto.getStock() : 0);
 
-            // Update fields
-            if (dto.getName() != null && !dto.getName().trim().isEmpty()) {
-                existingProduct.setName(dto.getName().trim());
-            }
-            if (dto.getDescription() != null) {
-                existingProduct.setDescription(dto.getDescription().trim());
-            }
-            if (dto.getPrice() != null && dto.getPrice() > 0) {
-                existingProduct.setPrice(dto.getPrice());
-            }
-            if (dto.getStock() != null) {
-                existingProduct.setStock(dto.getStock());
-            }
-
-            // Save updated product
-            Product updatedProduct = productService.save(existingProduct);
-            System.out.println("✅ Product updated: " + updatedProduct.getId());
+            Product updatedProduct = productService.updateProduct(id, product);
+            log.info("Product updated successfully: {}", id);
 
             return ResponseEntity.ok(updatedProduct);
 
         } catch (RuntimeException e) {
+            log.warn("Product not found for update: {}", id);
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body("Product not found with ID: " + id);
+                    .body(e.getMessage());
         } catch (Exception e) {
-            System.err.println("❌ Error updating product: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error updating product: " + e.getMessage());
+            log.error("Error updating product: ", e);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body("Failed to update product: " + e.getMessage());
         }
     }
 
-    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> deleteProduct(@PathVariable Long id) {
         try {
-            System.out.println("🗑️ Deleting product ID: " + id);
-            productService.delete(id);
-            System.out.println("✅ Product deleted: " + id);
-            return ResponseEntity.noContent().build();
-        } catch (RuntimeException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body("Product not found with ID: " + id);
-        } catch (Exception e) {
-            System.err.println("❌ Error deleting product: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error deleting product: " + e.getMessage());
-        }
-    }
+            log.info("Deleting product: {}", id);
 
-    // Test endpoint
-    @GetMapping("/test")
-    public ResponseEntity<String> test() {
-        return ResponseEntity.ok("Product controller is working!");
+            if (!productService.getProductById(id).isPresent()) {
+                throw new RuntimeException("Product not found with id: " + id);
+            }
+
+            productService.deleteProduct(id);
+            log.info("Product deleted successfully: {}", id);
+
+            return ResponseEntity.ok("Product deleted successfully");
+
+        } catch (RuntimeException e) {
+            log.warn("Product not found for deletion: {}", id);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(e.getMessage());
+        } catch (Exception e) {
+            log.error("Error deleting product: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Failed to delete product");
+        }
     }
 }

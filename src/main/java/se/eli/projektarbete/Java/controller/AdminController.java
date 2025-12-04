@@ -6,7 +6,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import se.eli.projektarbete.Java.entity.User;
 import se.eli.projektarbete.Java.repository.UserRepository;
-import se.eli.projektarbete.Java.service.CustomUserDetailsService;
 
 import java.util.List;
 
