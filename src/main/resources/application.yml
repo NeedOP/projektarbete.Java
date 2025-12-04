@@ -4,14 +4,14 @@ server:
 spring:
   datasource:
     url: jdbc:h2:mem:ecommerce
-    driverClassName: org.h2.Driver
+    driver-class-name: org.h2.Driver
     username: sa
     password: password
 
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: false
+    show-sql: true
     properties:
       hibernate:
         format_sql: true
@@ -20,16 +20,21 @@ spring:
     console:
       enabled: true
       path: /h2-console
+      settings:
+        web-allow-others: true  # Allow remote access
 
-  jackson:
-    serialization:
-      fail-on-empty-beans: false
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
 
 jwt:
-  secret: "my-super-secret-key-should-be-long"
-  expiration: 86400000 # 1 day in ms
+  secret: "my-super-secret-key-should-be-long-at-least-32-characters"
+  expiration-ms: 86400000
 
 logging:
   level:
-    org.springframework.security: INFO
-    com.example: DEBUG
+    org.springframework.security: DEBUG
+    se.eli.projektarbete: DEBUG
+    org.hibernate.SQL: DEBUG

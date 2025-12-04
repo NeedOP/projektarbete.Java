@@ -9,6 +9,7 @@ import java.util.List;
 
 @Service
 public class ProductService {
+
     @Autowired
     ProductRepository productRepository;
 
@@ -21,10 +22,14 @@ public class ProductService {
     }
 
     public Product get(Long id) {
-        return productRepository.findById(id).orElseThrow();
+        return productRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Product not found with id: " + id));
     }
 
     public void delete(Long id) {
+        if (!productRepository.existsById(id)) {
+            throw new RuntimeException("Product not found with id: " + id);
+        }
         productRepository.deleteById(id);
     }
 }

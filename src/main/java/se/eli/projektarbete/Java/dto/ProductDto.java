@@ -1,16 +1,24 @@
 package se.eli.projektarbete.Java.dto;
 
-import lombok.Data;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import lombok.Data;
 
 @Data
 public class ProductDto {
+
     private Long id;
-    @NotBlank
+
+    @NotBlank(message = "Product name is required")
     private String name;
+
     private String description;
-    @NotNull
+
+    @NotNull(message = "Price is required")
+    @Positive(message = "Price must be greater than 0")
     private Double price;
-    private Integer stock;
+
+    @Positive(message = "Stock must be 0 or greater")
+    private Integer stock = 0;
 }
